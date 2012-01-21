@@ -45,7 +45,7 @@ int* read_ebp();
  * @param ebp pointer in strack frame of function
  * @return entry address of function
  */
-int extract_function_address(int *ebp_ptr);
+//int extract_function_address(int *ebp_ptr);
 
 /* @brief wrapper function of unix error
  *
@@ -119,26 +119,104 @@ void SIGSEGV_handler(int sig, siginfo_t *info, void *uap);
  */
 void setup_SIGSEGV_handler();
 
+/* @brief given a pointer to old_ebp, locate and return return address(address above 1) 
+ *
+ * @param ebp_ptr pointer to old_ebp value
+ * @return return address that is stored before old_ebp value in stack 
+ */
+int extract_return_address(int *ebp_ptr); 
+
+/* @brief given a function return address, calcaulate entry address of that function
+ * 
+ * address - 5 will jump to prvious call instruction, + 1 to skip E8, then read out 
+ * offset value, and add to return address
+ * 
+ * @param return address 
+ * @return entry address of certain function
+ */
+int extract_function_address(int return_address); 
+
+
+/* @brief similar like extract_function_address, only difference is return of main is 
+ * followed by a exit function, this function assume it followed by a exit function
+ *
+ * @param return address 
+ * @return estimate exit function address 
+ */
+int extract_exit_function_address(int return_address);
+
+
+/* @brief test whether stack crawler has reached main function
+ *
+ * @param address entry address of certain function 
+ * @return -1 for not in functions table, otherwise return index in functions table
+ */
+int is_reach_main(int return_address, FILE *fp);
+
 /* impelmentation of each function prototype mentioned above */
 void traceback(FILE *fp) {
+ 
     setup_SIGSEGV_handler();
+
+    int return_address = 0;
 
     int func_table_index = 0;
     int* ebp = (int*)read_ebp();
     int* ebp_ptr = (int*)(*ebp);
-    int address = extract_function_address(ebp_ptr);
+    /* skip traceback function ebp */
     ebp_ptr = (int*)*(ebp_ptr);
-    address = extract_function_address(ebp_ptr);
+    return_address = extract_return_address(ebp_ptr);
 
-    while ((func_table_index = is_in_function_tab(address)) != -1) { 
-        fprintf(fp, "Function %s", functions[func_table_index].name);
-        /* output arg information */
-        extract_arg_info((char*)ebp_ptr, func_table_index, fp);
-        fprintf(fp, ", in\n");
+    while ((func_table_index = is_reach_main(return_address, fp)) != -1) {
 
-        /* update ebp_ptr to previous functions ebp_ptr */
+        if (func_table_index >= 0) {
+            fprintf(fp, "Function %s", functions[func_table_index].name);
+            extract_arg_info((char*)ebp_ptr, func_table_index, fp);
+            fprintf(fp, ", in\n");
+        }
+
         ebp_ptr = (int*)*(ebp_ptr);
-        address = extract_function_address(ebp_ptr);
+        return_address = extract_return_address(ebp_ptr);
+    }
+}
+
+int extract_return_address(int *ebp_ptr) {
+    int *return_address_ptr = ebp_ptr + 1; 
+    int return_address = *return_address_ptr;
+    return return_address;
+}
+
+int extract_function_address(int return_address) {
+    int *offset_address_ptr = (int*)(return_address - 5 + 1);
+    int offset = *offset_address_ptr;   
+    int func_address = return_address + offset;
+
+    return func_address;
+}
+
+int extract_exit_function_address(int return_address) {
+    int *offset_address_ptr = (int*)(return_address + 3 + 1);
+    int offset = *offset_address_ptr;   
+    int exit_func_address = return_address + offset + 3 + 5;
+
+    return exit_func_address;
+}
+
+int is_reach_main(int return_address, FILE *fp) {
+    int index = 0;
+    int exit_func_address = 0;
+    int func_address = 0; 
+    func_address = extract_function_address(return_address);
+    if ((index = is_in_function_tab(func_address)) != -1) {
+        return index; 
+    } else {
+        exit_func_address = extract_exit_function_address(return_address);
+        if (is_in_function_tab(exit_func_address) != -1) {
+            return -1; 
+        } else {
+            fprintf(fp, "Function 0x%x, in\n", func_address);
+            return -2;
+        }
     }
 }
 
@@ -163,16 +241,6 @@ void setup_SIGSEGV_handler() {
     sigprocmask(SIG_UNBLOCK, &all_signals, NULL);
 }
 
-int extract_function_address(int *ebp_ptr) {
-    int *return_address_ptr = ebp_ptr + 1; 
-    int return_address = *return_address_ptr;
-    int *offset_address_ptr = (int*)(return_address - 5 + 1);
-    int offset = *offset_address_ptr;   
-    int func_address = return_address + offset;
-    
-    return func_address;
-}
-
 void unix_error(char *msg) {
     fprintf(stdout, "%s error: %s\n", msg, strerror(errno));
     exit(1);
@@ -190,13 +258,18 @@ int is_string_printable(char *str, int *str_len) {
     while (1) {
         if (str[i] == '\0')
             break;
-      
-        if (!isprint(str[i])) 
-            return 0;
 
         /* SIGSEGV_flag is changed in signal handler, then break */
         if (SIGSEGV_flag == 1)
             break;
+
+        if (!isprint(str[i])) { 
+            return 0;
+        }
+
+        if (SIGSEGV_flag == 1)
+            break;
+       
         i++;
     }
     *str_len = i;
@@ -307,8 +380,9 @@ int is_in_function_tab(int address) {
     int temp;
     while (strlen(functions[i].name) != 0) {
         temp = (int)functions[i].addr;
-        if (temp == address) 
+        if (temp == address) { 
             return i;
+        }
         i++;
     }
     return -1;
