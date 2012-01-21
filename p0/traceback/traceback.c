@@ -16,6 +16,13 @@
 #include <errno.h>
 #include "traceback_internal.h"
 
+#include <signal.h>
+#include <sys/mman.h>
+#include <ucontext.h>
+
+/* global variable */
+int SIGSEGV_flag = 0;
+
 /* function prototypes */
 
 /* @brief trace the function call in current stack
@@ -97,11 +104,26 @@ void extract_arg_info(char* ebp_ptr, int func_table_index, FILE *fp);
  */
 int is_in_function_tab(int address);
 
+/* @brief handle SIGSEGV signal 
+ *
+ *
+ * @param address entry address of certain function 
+ * @return -1 for not in functions table, otherwise return index in functions table
+ */
+void SIGSEGV_handler(int sig, siginfo_t *info, void *uap);
+
+/* @brief setup SIGSEGV handler 
+ *
+ * @param address entry address of certain function 
+ * @return -1 for not in functions table, otherwise return index in functions table
+ */
+void setup_SIGSEGV_handler();
+
 /* impelmentation of each function prototype mentioned above */
 void traceback(FILE *fp) {
+    setup_SIGSEGV_handler();
 
     int func_table_index = 0;
-
     int* ebp = (int*)read_ebp();
     int* ebp_ptr = (int*)(*ebp);
     int address = extract_function_address(ebp_ptr);
@@ -118,6 +140,27 @@ void traceback(FILE *fp) {
         ebp_ptr = (int*)*(ebp_ptr);
         address = extract_function_address(ebp_ptr);
     }
+}
+
+void SIGSEGV_handler(int sig, siginfo_t *info, void *uap) {
+    SIGSEGV_flag = 1;
+    ucontext_t *context = uap;
+    context->uc_mcontext.gregs[14] += 6; 
+    return;
+}
+
+void setup_SIGSEGV_handler() {
+    struct sigaction sa;
+    sigset_t all_signals;
+
+    sa.sa_sigaction = SIGSEGV_handler;  
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO; 
+    if (sigaction(SIGSEGV, &sa, NULL) < 0) {
+        unix_error("sigaction error");
+    }
+    sigfillset(&all_signals);
+    sigprocmask(SIG_UNBLOCK, &all_signals, NULL);
 }
 
 int extract_function_address(int *ebp_ptr) {
@@ -137,23 +180,26 @@ void unix_error(char *msg) {
 
 int is_string_printable(char *str, int *str_len) {
     int i = 0;
-    int fd = 0;
-    
-    if ((fd = open("/tmp/test", O_WRONLY|O_CREAT, S_IWUSR)) < 0) {
-        unix_error("open");
-    }
 
-    /* use system function write to test wheter member address is valid */
-    while (write(fd, str + i, 1) != -1) {
+    if (str == NULL) {
+        *str_len = i;
+        return 0;
+    }
+    SIGSEGV_flag = 0;
+
+    while (1) {
         if (str[i] == '\0')
             break;
       
         if (!isprint(str[i])) 
             return 0;
-       i++;
+
+        /* SIGSEGV_flag is changed in signal handler, then break */
+        if (SIGSEGV_flag == 1)
+            break;
+        i++;
     }
     *str_len = i;
-    close(fd);
     return 1;
 }
 
@@ -225,7 +271,7 @@ void output_arg_value(int type, int offset, char* name, char* ebp_ptr, FILE *fp)
             fprintf(fp, "void *%s=0v%x", name, *(int*)(ebp_ptr + offset));
             break;
         default:
-            fprintf(fp, "UNKNOWN %x", *(int*)(ebp_ptr + offset));
+            fprintf(fp, "UNKNOWN %p", (char*)(ebp_ptr + offset));
     }
 }
 

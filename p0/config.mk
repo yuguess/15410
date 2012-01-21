@@ -23,7 +23,7 @@ UPDATE_METHOD = web
 #
 # Any test programs that use the traceback function go here
 #
-TEST_PROGS = simple_test evil_test voidstar_test alarming_test
+TEST_PROGS = simple_test evil_test voidstar_test alarming_test string_test
 
 #
 # Any libs that are necessary for your test programs go here
